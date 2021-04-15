@@ -72,7 +72,7 @@ c.stddata2 %>%
 # # gsh - uncomment when connection to DB is possible
 # # FISH ADVISORY CHECKER 
 # # Open connection object.
-# conn <- odbcConnect("com", uid="waq_readonly", pwd="waqr3ad")
+# conn <- odbcConnect("com", uid="<username>", pwd="<password>")
 # 
 # # Check connection object is open.
 # odbcGetInfo(conn)
