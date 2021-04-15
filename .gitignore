@@ -1,0 +1,9 @@
+# ignore the desktop.ini files
+desktop.ini
+.Rproj.user
+*.csv
+*.CSV
+!human.csv
+!ZQAPARAM.csv
+*.Rdata
+*.RData

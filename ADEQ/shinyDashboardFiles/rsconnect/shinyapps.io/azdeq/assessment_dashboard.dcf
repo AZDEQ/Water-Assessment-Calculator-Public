@@ -1,0 +1,10 @@
+name: assessment_dashboard
+title:
+username:
+account: azdeq
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 2608936
+bundleId: 3632527
+url: https://azdeq.shinyapps.io/assessment_dashboard/
+when: 1600196253.99398

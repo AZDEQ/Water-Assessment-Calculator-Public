@@ -1,0 +1,1 @@
+The newCSVs folder is for a Developer/Admin to update CSV files needed for the Calculator to run.  When there are files in this folder, the code will copy them to the AWS s3 bucket, watercalculatorcsv.  From there the code read them in during processing.
