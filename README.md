@@ -1,1 +1,1 @@
-# Water-Assessment-Calculator-Public
+Water Assessment Calculator is used for calculating water quality impairments which is then used as a basis for reporting impaired water bodies in the State of Arizona. The system will allow ADEQ to make impairment and impairment removal decisions on a real-time basis instead of the current two-year reporting cycle.

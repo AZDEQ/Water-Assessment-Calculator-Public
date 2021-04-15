@@ -1,0 +1,1075 @@
+---
+title: "Arizona's Water Quality Assessment Dashboard"
+output: 
+ flexdashboard::flex_dashboard:
+   logo: logo.png
+   orientation: columns
+   vertical_layout: fill
+   theme: cerulean
+   source: embed
+runtime: shiny
+---
+
+```{r setup, include  =FALSE}
+
+# sets working directory relative to each user
+knitr::opts_knit$set(root.dir = "~/projects/WaterCalculator/ADEQ/shinyDashboardFiles")
+
+# by Jason Jones 
+
+# Libraries
+library(flexdashboard)
+library(rsconnect)
+library(shinyWidgets)
+library(scales)
+library(leaflet)
+library(shiny)
+library(DT)
+library(plotly)
+library(tidyverse)
+library(lubridate)
+library(png)
+library(knitr)
+library(sf)
+library(here)
+
+
+
+# allows user to add color to r markdown
+colorize <- function(x, color) {
+ if (knitr::is_latex_output()) {
+   sprintf("\\textcolor{%s}{%s}", color, x)
+ } else if (knitr::is_html_output()) {
+   sprintf("<span style='color: %s;'>%s</span>", color, 
+     x)
+ } else x
+}
+
+# Turn off scientific notation
+options(scipen = 999)
+
+# Inputs
+ZAPPA_DECISIONS <- read_csv("inputs/ZAPPA-DECISIONS.csv")
+ZAPPALIST <- distinct(ZAPPA_DECISIONS, WBID)
+ZWATERBODYNAME <- read_csv("inputs/ZWATERBODYNAME.csv")
+ZWATERBODYNAME <- ZWATERBODYNAME %>% arrange(WBID)
+ZPROVPARAMVB <- read_csv("inputs/ZPROVPARAMVB.csv")
+ZPROVWBVB <- read_csv("inputs/ZPROVWBVB.csv")
+ZWOTUSPARAMVB <- read_csv("inputs/ZWOTUSPARAMVB.csv")
+ZWOTUSWBVB <- read_csv("inputs/ZWOTUSWBVB.csv")
+ZREPORTDATE <- read_csv("inputs/ZREPORTDATE.csv", 
+   col_types = cols(x = col_date(format = "%Y-%m-%d")))
+ZPROVIMPAIRMENTS <- read_csv("inputs/ZPROVIMPAIRMENTS.csv", 
+   col_types = cols(Date = col_date(format = "%Y-%m-%d")))
+ZPLOTCAUSE <- read_csv("inputs/ZPLOTCAUSE.csv")
+ZPLOTUSE <- read_csv("inputs/ZPLOTUSE.csv")
+
+# Factorize
+ZAPPA_DECISIONS$AcuteChronic <- as.factor(ZAPPA_DECISIONS$AcuteChronic)
+ZAPPA_DECISIONS$WaterType <- as.factor(ZAPPA_DECISIONS$WaterType)
+
+# Add AZL and AZ to WB for GIS link
+Dec.W.GIS <- ZAPPA_DECISIONS %>% 
+ distinct(WBID, WaterbodyName, WaterType, DecisionWBID) %>% 
+ mutate(WBIDGIS = ifelse(WaterType == "Stream", paste0("AZ", WBID), paste0("AZL", WBID))) %>% 
+ select(WBID, WBIDGIS, WaterbodyName, DecisionWBID) %>% 
+ mutate(label = paste0(WaterbodyName, " (", WBID, ")"))
+
+# Import shapefiles for streams and lakes
+streamssf <- here("ADEQ/shinyDashboardFiles/streams/WBIDshort.shp") %>% 
+ st_read()
+
+lakessf <- here("ADEQ/shinyDashboardFiles/lakes/wbidlakes.shp") %>% 
+ st_read()
+
+# Transform to WGS84 and units = latlong code is 4326
+streams2 <- st_transform(streamssf, "+proj=longlat +datum=WGS84")
+lakes2 <-st_transform(lakessf, "+proj=longlat +datum=WGS84")
+
+# Filter to just assessed waters
+streams3 <- streams2 %>% 
+ left_join(Dec.W.GIS, by = c("WBID2" = "WBID")) %>% 
+ filter(!is.na(DecisionWBID))
+
+# Leaflet bug for polylines.  https://gis.stackexchange.com/questions/253898/adding-a-linestring-by-st-read-in-shiny-leaflet
+streams4 <- st_zm(streams3, drop = T, what = "ZM")
+
+streams4$DecisionWBID <- as.factor(streams4$DecisionWBID)
+
+lakes3 <- lakes2 %>% 
+ left_join(Dec.W.GIS, by = c("WB_ID" = "WBIDGIS")) %>% 
+ filter(!is.na(DecisionWBID))
+
+# Shorten SSC for plot
+ZPLOTCAUSE[grep("SUSPENDED SEDIMENT", ZPLOTCAUSE$CharacteristicName), "CharacteristicName"] <- "SSC"
+ZPLOTCAUSE[grep("AMMONIA", ZPLOTCAUSE$CharacteristicName), "CharacteristicName"] <- "AMMONIA"
+ZPLOTCAUSE[grep("OXYGEN", ZPLOTCAUSE$CharacteristicName), "CharacteristicName"] <- "DISSOLVED OXYGEN"
+
+
+# Using .R files for larger dataframe.  Faster loads and smaller size.  Datatypes defined.
+load(file = "inputs/ZCDATA.Rdata") # note that this opens as c.stddata2
+load(file = "inputs/ZEXCEED.Rdata") # note that this opens as f.exceed
+
+# define today
+now <- Sys.Date()
+
+# Prep c.stddata.  Show cumulative record count.
+cumrecord <- c.stddata2 %>% 
+ select(ActivityStartDate, STDResult) %>% 
+ mutate(count = 1) %>% 
+ arrange(ActivityStartDate) %>% 
+ mutate(cumulative = cumsum(count)) %>%
+ group_by(ActivityStartDate) %>% 
+ arrange(ActivityStartDate, desc(cumulative)) %>% 
+ distinct(ActivityStartDate, .keep_all = TRUE)
+
+# Replace NAs. Add field to count impairments.
+ZPROVIMPAIRMENTS <- ZPROVIMPAIRMENTS %>%
+ replace_na(list(Current = "Not")) %>% 
+ replace_na(list(WOTUSSTATUS = "Unknown")) %>% 
+ mutate(Counter = ifelse(Action == "Impaired", -1, 1)) %>% 
+ arrange(Stage, Date)
+
+# Vectorize the dataframes used in valueboxes
+vbprovwbid <- ZPROVWBVB$x
+vbprovparam <- ZPROVPARAMVB$x
+vbwotuswb <- ZWOTUSWBVB$x
+vbwotusparam <- ZWOTUSPARAMVB$x
+vblastupdate <- ZREPORTDATE$x
+
+# Factor selection Pickers for ZPROVIMPAIRMENTS
+ZPROVIMPAIRMENTS$Stage <- as.factor(ZPROVIMPAIRMENTS$Stage)
+ZPROVIMPAIRMENTS$WOTUSSTATUS <- as.factor(ZPROVIMPAIRMENTS$WOTUSSTATUS)
+ZPROVIMPAIRMENTS$Action <- as.factor(ZPROVIMPAIRMENTS$Action)
+ZPROVIMPAIRMENTS$Current <- as.factor(ZPROVIMPAIRMENTS$Current)
+
+# Determine current day
+nowdate <- Sys.Date()
+
+# Week crosswalk to day
+ZDATES <- read_csv("inputs/ZDATES.csv", 
+   col_types = cols(Day = col_date(format = "%m/%d/%Y"), 
+       Week = col_date(format = "%m/%d/%Y")))
+
+
+# WBID Numbers.  
+a.wb <- ZAPPA_DECISIONS %>% 
+ distinct(WBID, DecisionWBID) %>% 
+ group_by(DecisionWBID) %>% 
+ summarise(count = n()) %>% 
+ mutate(Level = "Waterbody") %>% 
+ mutate(Map = ifelse(DecisionWBID == "Attaining", "Healthy",
+		     ifelse(DecisionWBID == "Impaired", "Sick",
+			    ifelse(DecisionWBID == "Inconclusive", "Unknown", "Not Assessed"))))
+
+# Use Number.  
+a.use <- ZAPPA_DECISIONS %>% 
+ distinct(WBID, Use, DecisionUse) %>% 
+ group_by(DecisionUse) %>% 
+ summarise(count = n()) %>% 
+ mutate(Level = "Use") %>% 
+ mutate(Map = ifelse(DecisionUse == "Supporting", "Healthy",
+		     ifelse(DecisionUse == "Not supporting", "Sick",
+			    ifelse(DecisionUse == "Insufficient information", "Unknown", "Not Assessed"))))
+
+
+# Parameter.  
+a.param <- ZAPPA_DECISIONS %>% 
+ distinct(WBID, Use, CharacteristicName, DecisionParameter) %>% 
+ group_by(DecisionParameter) %>% 
+ summarise(count = n()) %>% 
+ mutate(Level = "Parameter") %>% 
+ mutate(Map = ifelse(DecisionParameter == "meeting criteria", "Healthy",
+		     ifelse(DecisionParameter == "not meeting criteria", "Sick",
+			    ifelse(DecisionParameter == "not enough information", "Unknown", "Not Assessed"))))
+
+a.all <- bind_rows(a.wb, a.use, a.param)
+
+a.all2 <- a.all %>% 
+ select(Level, Map, count) %>% 
+ spread(Map, count) %>% 
+ rename("Impaired-Not Supporting-Not Meeting" = "Sick", "Attaining-Supporting-Meeting" = "Healthy", "Inconclusive" = "Unknown") %>% 
+ select(Level, `Attaining-Supporting-Meeting`, `Impaired-Not Supporting-Not Meeting`, Inconclusive)
+
+
+#### 2 - Itemized Decisions ####
+
+Dec.P <- ZAPPA_DECISIONS %>% 
+ ungroup() %>% 
+ select(WBID, WaterbodyName, WATERSHED, AcuteChronic, CharacteristicName, ResultSampleFractionText, DecisionParameter) %>% 
+ arrange(WBID, AcuteChronic, CharacteristicName, ResultSampleFractionText)
+
+Dec.P$WBID <- as.factor(Dec.P$WBID)
+# Dec.P$WATERSHED <- as.factor(Dec.P$WATERSHED)
+
+
+Dec.U <- ZAPPA_DECISIONS %>% 
+ distinct(WBID, Use, DecisionUse)
+
+Dec.U.Inc <- filter(Dec.U, DecisionUse == "Insufficient information")
+
+Dec.W <- ZAPPA_DECISIONS %>% 
+ distinct(WBID, WaterbodyName, DecisionWBID)
+
+
+
+# Datagaps
+
+# Open and prep datagap summary
+ZDATAGAP <- read_csv("inputs/ZDATAGAP.csv", 
+   col_types = cols(Decision = col_character()))
+
+datagap <- ZDATAGAP %>% 
+ select(WBID, WATERBODY_NAME, latitude, longitude, DatagapNumbersamples, DatagapSite, DatagapNeeds, PotentialDelist, Champion) %>% 
+ filter(!is.na(latitude)) %>% # so leaflet can work
+ mutate(Active = ifelse(is.na(Champion), "Inactive", "Active")) %>% 
+ mutate(label = paste0(DatagapSite, " (", WBID, ")"))
+
+datagap$WBID <- as.factor(datagap$WBID)
+datagap$Active <- as.factor(datagap$Active)
+
+# Open and prep itemized datagaps
+ZITEMIZEDGAPS <- ZAPPA_DECISIONS
+
+ZITEMIZEDGAPS$COREPARAMETER[is.na(ZITEMIZEDGAPS$COREPARAMETER)] <- "N"
+
+# replace with zappa-decisions
+ZITEMIZEDGAPS <- ZITEMIZEDGAPS %>% 
+ select(-LAKE_ACRES, -ORIGIN, -TERMINUS, -Use, - Binomial) %>%
+ rename(Fraction = ResultSampleFractionText, Core = COREPARAMETER, Met = NumberCriteriaMet, Not = NumberCriteriaNotMet, Tot = TotalSamples, Use = AcuteChronic) %>% 
+   arrange(WBID, Use, CharacteristicName, Fraction)
+
+ZITEMIZEDGAPS$WBID <- as.factor(ZITEMIZEDGAPS$WBID)
+ZITEMIZEDGAPS$DecisionUse <- as.factor(ZITEMIZEDGAPS$DecisionUse)
+
+# Raw Data
+d.raw <- c.stddata2
+
+# Pull exceedance count
+f.exceedyes <- filter(f.exceed, Exceed == "Yes")
+
+```
+
+Dashboard {data-navmenu="Dashboard" data-icon="fa-dashboard"}
+========================================
+
+Column {data-width=450}
+---------------------------------------------------------------------------
+
+### Welcome
+
+This dashboard gives an overview of Arizona's water quality assessment for the 2022 cycle which includes data from 7/1/2016 to 6/30/21.  
+
+Assumptions and detailed instructions for using the dashboard can be found by clicking the 'Dashboard' page then 'Read Me' or by clicking [HERE](#readme).
+
+Last Day Assessment Tool Ran: **`r colorize(ZREPORTDATE$x, "darkorange")`**
+
+Number of Records (formatted and aggregated): **`r colorize(nrow(c.stddata2), "darkorange")`** 
+
+Number of Provisional Impaired Waters (WOTUS): **`r colorize(vbwotuswb, "darkorange")`** (Click the [Impairments](#impairments) page for more information)
+
+Number of Provisional Impaired Waters (All): **`r colorize(ZPROVWBVB$x, "darkorange")`** (Click the [Impairments](#impairments) page for more information)
+
+Number of Exceedances: **`r colorize(nrow(f.exceedyes), "darkorange")`**. (Click the [Decisions](#decisions) page for more information)
+
+Number of Inconclusives (Use): **`r colorize(nrow(Dec.U.Inc), "darkorange")`**. (See  below and/or click the [Datagap](#datagap) page for more information)
+
+### Provisional Decisions at Each Assessment Level
+
+```{r}
+
+# Add data
+datatable(a.all2, rownames = FALSE, escape = FALSE, options = list(dom = 't')) %>% 
+ formatStyle('Attaining-Supporting-Meeting', backgroundColor = "#c5f4b3") %>% 
+formatStyle('Impaired-Not Supporting-Not Meeting',  backgroundColor = "#ffcccc") %>%
+ formatStyle('Inconclusive',  backgroundColor = "#fff2cc") 
+
+```
+
+
+Column {data-width=300}
+---------------------------------------------------------------------------
+
+### Map of Provisional Time Assessment Waterbody Decisions
+
+```{r}
+
+lakepal <- colorFactor(palette = c("#fedb76", "#fb7e7e", "grey"),
+		  levels = c("Inconclusive", "Impaired", "Not assessed"))
+streampal <- colorFactor(palette = c("#fedb76", "#93f26f", "#fb7e7e", "grey"),
+		  levels = c("Inconclusive", "Attaining", "Impaired", "Not assessed"))
+
+renderLeaflet({  
+ leaflet() %>%
+ addProviderTiles(providers$CartoDB.Positron) %>% 
+ addPolylines(data = streams4,
+   color = ~streampal(DecisionWBID),
+   opacity = 1.0,
+   label = ~label) %>%
+ addPolygons(data = lakes3,
+   color = ~lakepal(DecisionWBID),
+   opacity = 1.0,
+   label = ~label) %>% 
+ addLegend(pal = streampal,
+	     values = c("Inconclusive", "Attaining", "Impaired", "Not assessed"))
+
+})
+
+# renderPlotly({ZPLOTCUM <- cumrecord %>%
+#   ggplot(aes(x = ActivityStartDate, y = cumulative))+
+#   geom_line(alpha = .6, color = "darkblue", size = 1.2)+
+#   geom_vline(aes(xintercept = as.Date("2020-08-14")), color = "grey")+
+#   scale_x_date(limits = c(as.Date("2016-07-01"), as.Date("2021-06-30"))) +
+#   labs(x = "", y = "Cumulative Records") +
+#   theme_light() +
+#   theme(panel.grid.major.y = element_blank(), legend.position = "none", legend.title = element_blank())
+# ggplotly(ZPLOTCUM)
+# })
+
+
+```
+
+Use Decisions{data-navmenu="Dashboard" data-icon="fa-bar-chart" #usedecision}
+========================================
+
+```{r}
+
+renderPlotly({PUSE <- ZPLOTUSE %>% 
+   ggplot(aes(x = reorder(Use, Count), y = Count, fill = DecisionUse, color = DecisionUse)) +
+   geom_col(alpha = 0.6) +
+   coord_flip() +
+   labs(y = "Count", x = "") +
+   scale_y_continuous(breaks = seq(0, 350, 50), expand = c(0.01, 0)) +
+   scale_fill_manual(values = c("#ffc000", "#c00000", "#70ad47")) +
+   scale_color_manual(values = c("#ffc000", "#c00000", "#70ad47")) +
+   theme_light() +
+   theme(panel.grid.major.y = element_blank(), legend.position = "bottom", legend.title = element_blank())
+ggplotly(PUSE)
+})
+
+```
+
+
+
+Read Me{data-navmenu="Dashboard" data-icon="fa-question-circle" #readme}
+========================================
+
+Column {}
+---------------------------------------------------------------------------
+
+### Welcome - A Few Things You Should Know
+`r colorize("DISCLAIMER - THIS DASHBOARD DISPLAYS WEEKLY ASSESSMENT INFORMATION.  THIS DATA IS PROVISIONAL UNTIL EPA APPROVES THE OFFICIAL ASSESSESSMENT.  OFFICIAL ASSESSMENTS ARE GENERALLY APPROVED EVERY EVEN YEAR AND ARE DUE TO EPA BY APRIL 1ST.", "red")`
+
+**Source**. Data comes from the water quality portal at <http://www.waterqualitydata.us>.  The 2020 proposed standards are used.    
+
+**Goal**. This tool is meant to help you visualize current assessment data in a quick and systematic way.
+
+#### Process/Assumptions  
+
+ + The 2022 Assessment Cycle runs from 7/1/2016 to 6/30/2021. 
+
+  + Data from the portal is run through the assessment tool which is available at <https://github.com/AZDEQ/Water-Assessment-Calculator>.  Code for this app is available by clicking 'source code' in the top right of your screen.
+
+ + Data from the assessment tool is run at least weekly.  The last run was **`r vblastupdate`**.
+
+ + Data is formatted and aggregated in accordance with the latest assessment methodology which is located at `J:\WQD\Surface Water Section\Assessments\2020 Assessment\Internal Review\Draft 2020 Clean Water Act Assessment5.docx`. 
+
+ + See every assessment since 1973 at `J:\WQD\Surface Water Section\Monitoring Unit\Reference\Important Internal Documents\Assessments`.
+
+#### How To Use
+
+The dashboard is divided into the following peices.  Each section is interactive.  Simply click options to filter and view results.
+
+ 1.  **Impairments.**  Details current provisional impairments over time.  Click the various tabs to see waterbody and parameter level impairments.  Note parameter level impairments do not include use information in this section.
+
+ 2.  **Decisions.** Details all assessment decisions by waterbody, use and parameter.
+
+ 3.  **Datagaps.** Focuses on what is causing a use to be assessed as 'insufficent information' and what data can be gathered to make a 'supporting' or 'not supporting' decision.
+
+ 4.  **Summary.**  Graphs and tables that summarize the current assessment.
+
+#### Field Descriptions
+
+**Impairment Tables**
+
+ + WBID = Waterbody code to uniquely identify the assessment unit for a stream reach or lake.
+
+ + Date = Date of impairment listing. 
+
+ + Stage = Official means EPA approved. Provisional means EPA hasn't approved the decision yet.
+
+ + Action = Identifies if a water was delisted.
+
+ + WOTUSSTATUS = ADEQ's current estimation of whether the waterbody is a water's of the United States.
+
+ + Current = Easily filter for current impairments by filtering for 'impaired'.
+
+**Decision and Datagap Tables**
+
+ * Use
+
+   + AGI = Agriculture Irrigation
+
+   + AGL = Agriculture Livestock
+
+   + AWC = Aquatic and Wildlife Cold
+
+   + AWW = Aquatic and Wildlife Warm
+
+   + AWEDWC = Aquatic and Wildlife Effluent Dependent Water
+
+     - Note: Each aquatic and wildlife use can have a acute or chonic modifier (see methods)  
+
+   + DWS = Domestic Water Source
+
+   + FBC = Full Body Contact
+
+   + PBC = Partial Body Contact
+
+   + FC = Fish Consumption
+
+ * Core = A "Y" indicates a core parameter, which are parameters needed to make attainment decisions.  List of core parameters is in the methods document referenced above.
+
+ * CharacteristicName = The parameter or substance.
+
+ * Fraction = The analysis type for a particular characteristic (total, dissolved, suspended, etc.)
+
+ * Met = Number of samples meeting criteria.
+
+ * Not = Number of samples not meeting criteria.
+
+ * Tot = Total Number of samples.
+
+ * Binomial = Does the characteristic use the binomial rule?  Binomial characteristics need more samples to make decisions.
+
+ * ImpairmentType. Identifies if this waterbody/characteristic is an existing impairment or a new impairment.
+
+ * Comment. Details why a decision was made.
+
+ * paramcarryforward = Identifies if the parameter decision is from the last assessment.
+
+ * usecarryforward = Identifies if the use decision is from the last assessment.
+
+ * Season = Identifies which seasons need to be sampled to make a decision.  Open, Open, Fall, Winter means that fall and winter have been sampled but spring and summer need coverage.
+
+ * COREANDSEASON = Identifies if there is core and seasonal distribution.
+
+**Decision-Exceedance Table**
+ * AggDate = Aggregated date.  Most samples are aggregated using the 7 day rule (see methods).
+
+ * Result = Characteristic value typically in mg/l.
+
+ * Standard = Standard value typically in mg/l.
+
+ * Exceed = Did the result exceed the standard?  Note pH and dissolved oxygen are said to exceed for results less than the standard.
+
+ * ActivityStartDate = Nonaggregated sample date.
+
+**Decision-Raw Data Table** 
+
+ * MonitoringLocationIdentifier = Site where sample taken.
+
+ * ResultDetectionConditionText = Was the result non-detect?
+
+ * STDResult = Standardized results in mg/l (typically)
+
+ * STDDETECTIONLIMIT = Standized detection limit values in mg/L (typically)
+
+ * OrganizationIdentifier = Who reported the results?
+
+ * AgencyConductingOrganizationText = Who collected the sample?
+
+ * ndorresult = Identifies non-detects.
+
+**Datagap Summary Table**
+
+ * DatagapNumberSamples = Shows the maximum number of samples needed to make a use support decision.  Note this number is dynamic so if the number is 2 and new data shows an exceedance then the DatagapNumberSamples will change based on the new data.
+
+ * DatagapSite = Most commonly sampled site.  Used as a suggestion not required to sample here.
+
+ * Datagap Needs = One line summary of parameters needed.  See itemized table for line by line accounting.  Format is (Parameter - # samples - Season).  Note: newhardness = Hardness.  newtn = Total Nitrogen.  Both of these parameters either have multiple options or are calculated based on subparts.  Identifies which seasons need to be sampled to make a decision.  Open, Open, Fall, Winter means that fall and winter have been sampled but spring and summer need coverage.
+
+ * Potential Delist = An existing parameter that was not meeting criteria (impaired) that currently has zero exceedances.
+
+ * Champion = LAN ID of staff trying to fill the datagap.
+
+ * Active = Is this site in the current sample plan?
+
+
+
+Current Numbers {data-navmenu="Impairments" data-icon="fa-warning" #impairments}
+========================================
+
+Column {data-width=250} 
+-------------------------------------
+
+### Last Update {.value-box}
+
+```{r}
+valueBox("2018-11-17",
+	caption = 'Official Approval Date - 2018 Cycle',
+       icon = 'fa-vial')
+```
+
+### Key Performance Indicator - Waterbody {.value-box}
+
+```{r}
+
+valueBox(143,
+	caption = 'Official # of Waterbody Impairments',
+       icon = 'fa-vial',
+       color = ifelse(143 > 0, "danger", "primary"))
+```
+
+### Key Performance Indicator - Waterbody {.value-box}
+
+```{r}
+valueBox(253,
+	caption = 'Official # of Parameter Impairments',
+       icon = 'fa-vial',
+       color = ifelse(253 > 0, "danger", "primary"))
+```
+
+
+Column {data-width=250} 
+-------------------------------------
+
+
+### Last Update {.value-box}
+
+```{r}
+valueBox(vblastupdate,
+	caption = 'Provisional - Last Ran',
+       icon = 'fa-vial')
+```
+
+### Key Performance Indicator - Waterbody {.value-box}
+
+```{r}
+
+valueBox(vbprovwbid,
+	caption = 'Provisional # of Waterbody Impairments',
+       icon = 'fa-vial',
+       color = ifelse(vbprovwbid > 0, "danger", "primary"))
+```
+
+### Key Performance Indicator - Waterbody {.value-box}
+
+```{r}
+valueBox(vbprovparam,
+	caption = 'Provisional # of Parameter Impairments',
+       icon = 'fa-vial',
+       color = ifelse(vbprovparam > 0, "danger", "primary"))
+```
+
+
+Column {data-width=250} 
+-------------------------------------
+
+### Provisional WOTUS
+
+```{r}
+valueBox(vblastupdate,
+	caption = 'Tier 4 (Draft WOTUS) - Last Ran',
+       icon = 'fa-vial')
+```
+
+### Key Performance Indicator - Waterbody {.value-box}
+
+```{r}
+
+valueBox(vbwotuswb,
+	caption = 'Tier 4 (Draft WOTUS) # of WB Impairments',
+       icon = 'fa-vial',
+       color = ifelse(vbwotuswb > 0, "danger", "primary"))
+```
+
+### Key Performance Indicator - Waterbody {.value-box}
+
+```{r}
+valueBox(vbwotusparam,
+	caption = 'Tier 4 (Draft WOTUS) # of Parm. Impairments',
+       icon = 'fa-vial',
+       color = ifelse(vbwotusparam > 0, "danger", "primary"))
+```
+
+Waterbody Impairments {data-navmenu="Impairments" data-icon="fa-table"}
+========================================
+
+Column {data-width=200 .sidebar}
+-----------------------------------------------------------------------
+
+### Waterbody
+```{r}
+
+checkboxGroupInput("impwbwotus", "Select WOTUS Status",
+		       choices = levels(ZPROVIMPAIRMENTS$WOTUSSTATUS),
+		       selected = ZPROVIMPAIRMENTS$WOTUSSTATUS)
+
+checkboxGroupInput("impwbcurrent", "Filter for Currently Impaired?",
+		       choices = levels(ZPROVIMPAIRMENTS$Current),
+		       selected = "Impaired")
+
+impwbparam <- reactive({
+
+ ZPROVIMPAIRMENTS %>%
+   arrange(WBID, Current, desc(Date)) %>% 
+   distinct(WBID,  .keep_all = TRUE) %>% 
+   filter(WOTUSSTATUS %in% input$impwbwotus, Current %in% input$impwbcurrent) 
+
+})
+
+
+```
+
+**Field Descriptions**
+
+ + WBID = Waterbody code to uniquely identify the assessment unit for a stream reach or lake.
+
+ + Date = Date of impairment listing. 
+
+ + Stage = Official means EPA approved. Provisional means EPA hasn't approved the decision yet.
+
+ + Action = Identifies if a water was delisted.
+
+ + WOTUSSTATUS = ADEQ's current estimation of whether the waterbody is a water's of the United States.
+
+ + Current = Easily filter for current impairments by filtering for 'impaired'.
+
+
+
+Column {data-width=650}
+------------------------------------------------------
+
+```{r}
+
+# This is close but would need to dynamically change the starting point of the graph.  The logic for rolling up parameters to wB not quite right
+# renderPlotly({impwbplot <- impwbparam() %>%  
+#   arrange(WBID, Date) %>% 
+#   group_by(WBID) %>% 
+#   mutate(fulldelist = sum(Counter)) %>% # full delist = 0 
+#   mutate(wbidcount = ifelse(fulldelist < 0, -1, 1)) %>% 
+#   ungroup() %>% 
+#   distinct(WBID, .keep_all = TRUE) %>% 
+#   arrange(Date) %>% 
+#   filter(Date >= '2018-05-18') %>% 
+#   mutate(Officialparam = -142) %>% 
+#   mutate(Cumulative = cumsum(wbidcount) + Officialparam) %>% 
+#   ggplot(aes(x = Date, y = Cumulative)) +
+#     geom_point(color = "darkorange") +
+#     geom_line(color = "darkorange", size = 1.5, alpha = .2) +
+#     labs(y = "# Parameter Impairments", x = "") +
+#     theme_light() 
+# ggplotly(impwbplot)
+# })
+
+
+renderDataTable({impwbparam() %>% 
+   # mutate(Cumulative = cumsum(Counter)) %>% 
+   select(-Counter, -Comment, -CharacteristicName) %>% 
+   # select(WBID, WaterbodyName, DecisionWBID) %>% 
+   datatable(rownames = FALSE, filter = 'top', options = list(pageLength = 5)) 
+
+})
+
+
+```
+
+
+
+Parameter Impairments {data-navmenu="Impairments" data-icon="fa-table"}
+========================================
+
+Column {data-width=200 .sidebar}
+-----------------------------------------------------------------------
+
+### Parameter
+```{r}
+
+checkboxGroupInput("impwotus", "Select WOTUS Status",
+		       choices = levels(ZPROVIMPAIRMENTS$WOTUSSTATUS),
+		       selected = ZPROVIMPAIRMENTS$WOTUSSTATUS)
+
+checkboxGroupInput("impcurrent", "Filter for Currently Impaired?",
+		       choices = levels(ZPROVIMPAIRMENTS$Current),
+		       selected = "Impaired")
+
+impparam <- reactive({
+
+ ZPROVIMPAIRMENTS %>%
+   filter(WOTUSSTATUS %in% input$impwotus, Current %in% input$impcurrent) 
+
+})
+```
+**Field Descriptions**
+
+ + WBID = Waterbody code to uniquely identify the assessment unit for a stream reach or lake.
+
+ + Date = Date of impairment listing. 
+
+ + Stage = Official means EPA approved. Provisional means EPA hasn't approved the decision yet.
+
+ + Action = Identifies if a water was delisted.
+
+ + WOTUSSTATUS = ADEQ's current estimation of whether the waterbody is a water's of the United States.
+
+ + Current = Easily filter for current impairments by filtering for 'impaired'.
+
+Column {data-width=650}
+------------------------------------------------------
+
+```{r}
+
+# renderPlotly({impparamplot <- impparam() %>%  
+#   filter(Date >= '2018-05-18') %>% 
+#   group_by(Date) %>% 
+#   summarise(sumcount = sum(Counter)) %>% 
+#   mutate(Officialparam = -251) %>% 
+#   mutate(Cumulative = cumsum(sumcount) + Officialparam) %>%
+#   ggplot(aes(x = Date, y = Cumulative)) +
+#     geom_point(color = "darkred") +
+#     geom_line(color = "darkred", size = 1.5, alpha = .2) +
+#     labs(y = "# Parameter Impairments", x = "") +
+#     theme_light() 
+# ggplotly(impparamplot)
+# })
+
+renderDataTable({impparam() %>% 
+   # mutate(Cumulative = cumsum(Counter)) %>% 
+   select(-Counter, -Comment) %>% 
+   # select(WBID, WaterbodyName, DecisionWBID) %>% 
+   datatable(rownames = FALSE, filter = 'top', options = list(pageLength = 5)) 
+
+})
+
+
+
+
+```
+
+Impairment Causes {data-navmenu="Impairments" data-icon="fa-bar-chart"}
+========================================
+
+### Impairment Causes
+```{r}
+
+renderPlotly({PCAUSE <- ZPLOTCAUSE %>% 
+ ggplot(aes(x = reorder(CharacteristicName, Count), y = Count)) +
+   geom_col(alpha = 0.6, fill = "#c00000", color = "#c00000") +
+   coord_flip() +
+   labs(y = "Count", x = "") +
+   scale_y_continuous(breaks = seq(0, 60, 10)) +
+   theme_light() +
+   theme(panel.grid.major.y = element_blank(), legend.position = "none")
+ggplotly(PCAUSE)
+})
+
+```
+
+
+Decisions {data-icon="fa-check-square-o" #decisions}
+========================================
+
+
+Column {data-width=200 .sidebar}
+-----------------------------------------------------------------------
+
+
+
+```{r}
+
+# Helpful explaination of tabsets https://github.com/rstudio/flexdashboard/issues/265
+
+selectizeInput("decwb", h3("Select WBID"),
+		       choices = levels(Dec.P$WBID),
+		       selected = TRUE,
+		       multiple = FALSE)
+
+
+# 1 Waterbody, use, parameter summary
+
+dw <- reactive({
+
+ Dec.W %>%
+   filter(WBID == input$decwb) 
+})
+
+
+du <- reactive({
+
+ Dec.U %>%
+   filter(WBID == input$decwb) 
+
+})
+
+
+dp <- reactive({
+
+ Dec.P %>%
+   filter(WBID == input$decwb) 
+
+})
+
+# 2 number of exceedances and # samples with comments
+
+dhuman <- reactive({
+
+ ZAPPA_DECISIONS %>%
+   filter(WBID == input$decwb) %>% 
+select(DecisionParameter, AcuteChronic, COREPARAMETER, CharacteristicName, ResultSampleFractionText, NumberCriteriaMet, NumberCriteriaNotMet, TotalSamples, Binomial, ImpairmentType, Comment, paramcarryforward, usecarryforward, Season, COREPARAMETER, COREANDSEASON) %>% rename(Use = AcuteChronic, Core = COREPARAMETER, Fraction = ResultSampleFractionText, Met = NumberCriteriaMet, Not = NumberCriteriaNotMet, Tot = TotalSamples) %>% 
+   arrange(Use, DecisionParameter, CharacteristicName)
+
+})
+
+
+# 3 Exceedances
+
+dexceed <- reactive({
+
+ f.exceed %>%
+   filter(WBID == input$decwb) %>% 
+select(aggdate, CharacteristicName, ResultSampleFractionText, NewUse, aggtimespace, STDNEW, Exceed, SUBSTANCE_CAS_NO) %>% 
+   arrange(desc(Exceed)) %>% 
+   rename(AggDate = aggdate, Fraction = ResultSampleFractionText, Use = NewUse, Result = aggtimespace, ExceedComment = SUBSTANCE_CAS_NO, Standard = STDNEW)
+
+})
+
+# 4 Raw data
+draw <- reactive({
+
+ d.raw %>% 
+   filter(WBID %in% c(input$decwb))  
+
+
+})
+
+
+
+```
+
+The 'Decisions' page is broken into 5 parts.  
+
+ + 0-Waterbody List
+
+ + 1-Summary
+
+ + 2-Number of Exceedances / Samples
+
+ + 3-Exceedances
+
+ + 4-Raw Data.
+
+ + Z-All Decisions. View Download all `r nrow(ZAPPA_DECISIONS)` decisions
+
+You can drill into the data for a waterbody by selecting the waterbody identification code (WBID) above.  The '0-Waterbody List' table identifies the stream reaches and lakes that apply to each WBID.  Once you select the waterbody in the sidebar (not the table) the other decision pages (summary, number of exceedances/ samples, etc.) will update for the waterbody you choose.
+
+
+Column {data-width=650 .tabset}
+------------------------------------------------------
+
+### 0-Waterbody List
+``` {r}
+
+ZWATERBODYNAME %>% 
+ filter(WBID %in% ZAPPALIST$WBID) %>% 
+datatable(rownames = FALSE, options = list(scrollX="100px", scrollY = "350px", pageLength = 100), filter = 'top')  
+
+
+```
+
+
+### 1-Waterbody/Use
+
+
+#### **Waterbody**
+
+```{r}
+renderDataTable({dw() %>% 
+   select(WBID, WaterbodyName, DecisionWBID) %>% 
+   datatable(rownames = FALSE, options = list(dom = 't')) %>% 
+   formatStyle("DecisionWBID", background = styleEqual(c("Impaired", "Attaining", "Inconclusive"), c("#ffcccc", "#c5f4b3", "#fff2cc"))) 
+
+})
+
+```
+
+#### **Use**
+
+```{r}
+
+renderDataTable({du() %>% 
+   select(Use, DecisionUse) %>% 
+   datatable(rownames = FALSE, options = list(dom = 't')) %>% 
+   formatStyle("DecisionUse", background = styleEqual(c("Not supporting", "Supporting", "Insufficient information"), c("#ffcccc", "#c5f4b3", "#fff2cc"))) 
+
+})
+
+```
+
+
+### 2-Parameter
+
+```{r}
+renderDataTable({dhuman() %>% 
+  datatable(rownames = FALSE, options = list(scrollX="100px", scrollY = "500px", pageLength = 100)) %>% 
+     formatStyle("DecisionParameter", background = styleEqual(c("not meeting criteria", "meeting criteria", "not enough information"), c("#ffcccc", "#c5f4b3", "#fff2cc"))) %>% 
+   formatStyle("Core", background = styleEqual(c("Y", "N"), c("grey", "white"))) %>% 
+   formatStyle("Not", background = styleInterval(c(0.1, 10000), c("white", "grey", "white")))
+
+})
+
+
+
+
+```
+
+
+
+
+
+### 3-Exceedances
+
+
+```{r}
+renderDataTable({dexceed() %>% 
+  datatable(rownames = FALSE, options = list(scrollX="100px", scrollY = "500px", pageLength = 100)) %>% 
+     formatStyle("Exceed", target = "row", backgroundColor = styleEqual(c("Yes", "No"), c("#ffcccc", "white")))
+
+})
+
+```
+
+
+### 4-Raw Data
+
+```{r}
+renderDataTable({draw() %>% 
+  datatable(rownames = FALSE, options = list(scrollX="100px", scrollY = "500px", pageLength = 100)) 
+})
+
+```
+
+### Z-All Decisions
+
+```{r}
+renderDataTable({ZAPPA_DECISIONS %>% 
+  datatable(rownames = FALSE, extensions = 'Buttons', filter = "top", options = list(scrollX="100px", scrollY = "400px", pageLength = 100, dom = 'Bfrtip',
+   buttons = c('copy', 'csv', 'excel', 'pdf', 'print'))) %>% 
+   formatStyle("DecisionWBID", background = styleEqual(c("Impaired", "Attaining", "Inconclusive"), c("#ffcccc", "#c5f4b3", "#fff2cc"))) %>% 
+   formatStyle("DecisionUse", background = styleEqual(c("Not supporting", "Supporting", "Insufficient information"), c("#ffcccc", "#c5f4b3", "#fff2cc"))) %>% 
+     formatStyle("DecisionParameter", background = styleEqual(c("not meeting criteria", "meeting criteria", "not enough information"), c("#ffcccc", "#c5f4b3", "#fff2cc"))) 
+ # %>% 
+ #   formatStyle("Core", background = styleEqual(c("Y", "N"), c("grey", "white"))) %>% 
+ #   formatStyle("Not", background = styleInterval(c(0.1, 10000), c("white", "grey", "white")))
+
+
+})
+
+
+
+
+```
+
+
+
+Datagaps {data-icon="fa-map-o" #datagap}
+========================================
+
+Column {data-width=250 .sidebar}
+-----------------------------------------------------------------------
+
+
+```{r}
+
+pickerInput("dgwb", h3("Select Waterbody"),
+		       choices = levels(datagap$WBID),
+		       options = list(`actions-box` = TRUE), multiple = TRUE, selected = datagap$WBID)
+
+checkboxGroupInput("dgactive", h3("Select Active Datagap"),
+		       choices = levels(datagap$Active),
+		       selected = c("Active", "Inactive"))
+
+dgitem <- reactive({
+
+ ZITEMIZEDGAPS %>%
+   filter(WBID %in% c(input$dgwb), DecisionUse == "Insufficient information" | is.na(DecisionUse)) 
+
+})
+
+dggroup <- reactive({
+
+ datagap %>%
+   filter(WBID %in% c(input$dgwb), Active %in% c(input$dgactive)) 
+
+})
+
+```
+The 'Datagaps' Page is broken down into three sections.
+
+ + Itemized Datagaps - Shows **all** inconclusive assessment information at the use level.  
+
+ + Datagap Summary - Shows what parameters are needed to make a decision.
+
+ + Map - Shows where each datagap is located.
+
+"Active" sites are datagaps that ADEQ is currently sampling.
+
+Core parameters and exceedances in the 'Not' column are shaded to help the user see if a 'Insufficent information' decision is due to an exceedance or a missing core parameter.
+
+Column {data-width=650 .tabset}
+------------------------------------------------------
+
+### Itemized Table
+```{r}
+
+
+renderDataTable({dgitem() %>% 
+   select(WBID, Use, Core, CharacteristicName, Met, Not, Tot, DecisionParameter, DecisionUse, DecisionWBID, Season, SampleNeed, everything()) %>% 
+   datatable(rownames = FALSE, options = list(scrollX="100px", scrollY = "500px", pageLength = 100)) %>% 
+   formatStyle("DecisionWBID", background = styleEqual(c("Impaired", "Attaining", "Inconclusive", "Not assessed"), c("#ffcccc", "#c5f4b3", "#fff2cc", "#bfbfbf"))) %>% 
+   formatStyle("DecisionUse", background = styleEqual(c("Not supporting", "Supporting", "Insufficient information", "Not assessed"), c("#ffcccc", "#c5f4b3", "#fff2cc", "#bfbfbf"))) %>% 
+   formatStyle("DecisionParameter", background = styleEqual(c("not meeting criteria", "meeting criteria", "not enough information"), c("#ffcccc", "#c5f4b3", "#fff2cc"))) %>% 
+   formatStyle("Core", background = styleEqual(c("Y", "N"), c("grey", "white"))) %>% 
+   formatStyle("Not", background = styleInterval(c(0.1, 10000), c("white", "grey", "white")))
+
+
+
+})
+
+
+```
+
+
+### Datagap Summary
+```{r}
+
+
+renderDataTable({dggroup() %>% 
+   select(-latitude, -longitude) %>% 
+   datatable(rownames = FALSE, options = list(scrollX="100px", scrollY = "500px", pageLength = 100)) 
+
+
+})
+
+
+```
+
+### MAP
+```{r}
+
+pal <- colorFactor(palette = c("grey", "yellow"),
+		  levels = c("Inactive", "Active")) 
+renderLeaflet({dggroup() %>% 
+leaflet() %>%
+ addTiles() %>%
+ addCircleMarkers(
+   color = ~pal(Active),
+   label = ~label) %>% 
+ addLegend(pal = pal, 
+	     values = c("Inactive", "Active"))
+})
+
+
+```
+
+
