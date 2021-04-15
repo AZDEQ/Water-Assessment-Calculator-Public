@@ -359,7 +359,7 @@ c.stddata <- filter(c.stddata, ActivityMediaName == "Water" | ActivityMediaName 
 c.stddata <- mutate(c.stddata, STDResult = ResultMeasureValue * Conversion)
 
 # Connect to ADEQ Water Quality Database *** Don't share ***
-conn <- odbcConnect("com", uid="waq_readonly", pwd="waqr3ad")
+conn <- odbcConnect("com", uid="<username>", pwd="<password>")
  
 # Check connection object is open.
 odbcGetInfo(conn)
@@ -4161,7 +4161,7 @@ c.stddata2 %>%
 
 # FISH ADVISORY CHECKER 
 # Open connection object.
-conn <- odbcConnect("com", uid="waq_readonly", pwd="waqr3ad")
+conn <- odbcConnect("com", uid="<username>", pwd="<password>")
 
 # Check connection object is open.
 odbcGetInfo(conn)
