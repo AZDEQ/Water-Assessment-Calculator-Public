@@ -3,8 +3,6 @@ startDate <- as.Date("2012-07-01")
 endDate <- as.Date("2021-06-30") # negotiating 5/1/21 end date
 
 
-
-
 # credentials to access s3
 
 # AWS s3 buckets
@@ -32,9 +30,9 @@ connSuccess <- "no"
 if(user.useOracle == "y"){
   # Make Oracle Connection
   #Oracle credentials
-  oracleUserID <- "waq_readonly"
-  oraclePass <- "waqr3ad"
-  oracleDB <- "com"
+  oracleUserID <- "<oracle user>"
+  oraclePass <- "<password>"
+  oracleDB <- "<database>"
   
   conn <- makeConnection(oracleDB,oracleUserID,oraclePass)
   # odbcGetInfo(conn)
