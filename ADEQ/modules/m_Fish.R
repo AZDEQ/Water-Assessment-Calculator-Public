@@ -1,15 +1,5 @@
 # #### TEMP FISH ####
-# Open connection object.
-# conn <- odbcConnect("com", uid="waq_readonly", pwd="waqr3ad")
-# 
-# # Check connection object is open.
-# odbcGetInfo(conn)
-# 
-# # Query the database and put the results into the data frame
-# FISH <- sqlQuery(conn,"select * from VW_FISH_QUERY", rows_at_time = 1,believeNRows = FALSE)
-# 
-# #Close connection object.
-# close(conn)
+
 # 
 # # Join to c.sites to show WBID
 # FISH <- FISH %>%
